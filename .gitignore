@@ -1,0 +1,11 @@
+# Python Environment
+__pycache__/
+*.pyc
+venv/
+.env
+
+# Docker
+.dockerignore
+
+# VS Code
+.vscode/
