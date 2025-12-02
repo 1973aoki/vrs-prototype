@@ -5,22 +5,18 @@ import json
 import folium
 import pandas as pd
 import gspread
-import tomllib  # <--- ★これを追加 (標準ライブラリ)
-# main.py の冒頭に追加
+import tomllib
 import streamlit as st
-
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
-
 
 # ==========================================
 # 1. ユーティリティ関数
 # ==========================================
 
 def get_distance_matrix_batched(locations, api_key):
-    """APIリクエスト分割関数"""
     num_locs = len(locations)
     print(f"Google Maps APIで {num_locs} 地点 ({num_locs*num_locs}要素) のルート情報を取得中...")
     matrix = []
@@ -36,7 +32,6 @@ def get_distance_matrix_batched(locations, api_key):
                 response = requests.get(url)
                 data = response.json()
                 if data['status'] != 'OK':
-                    print(f"APIエラー: {data.get('status')}")
                     row_minutes.extend([9999] * len(chunk_locs))
                     continue
                 for element in data['rows'][0]['elements']:
@@ -45,8 +40,7 @@ def get_distance_matrix_batched(locations, api_key):
                         row_minutes.append(minutes)
                     else:
                         row_minutes.append(9999)
-            except Exception as e:
-                print(f"通信エラー: {e}")
+            except Exception:
                 row_minutes.extend([9999] * len(chunk_locs))
         matrix.append(row_minutes)
         print(f"進捗: {i+1}/{num_locs} 地点完了")
@@ -54,8 +48,7 @@ def get_distance_matrix_batched(locations, api_key):
     return matrix
 
 def calculate_haversine_matrix(locations):
-    """簡易計算関数"""
-    print("APIキーがないため、簡易計算モードで実行します...")
+    print("簡易計算モードで実行します...")
     matrix = []
     for i in range(len(locations)):
         row = []
@@ -76,27 +69,20 @@ def calculate_haversine_matrix(locations):
     return matrix
 
 def get_input_from_sheet(sheet_name="Input"):
-    """スプレッドシート読み込み"""
     print(f"シート '{sheet_name}' からデータを読み込んでいます...")
-    scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-    creds = Credentials.from_service_account_file('credentials.json', scopes=scopes)
-    client = gspread.authorize(creds)
-    
-    # ★スプレッドシートID (各自書き換え)★
-    spreadsheet_id = "10DPMrEQZkOdYJFVIcjqVas7HCuu7xCBwyGD4ha7BqG0" 
-    spreadsheet = client.open_by_key(spreadsheet_id)
-    
     try:
+        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+        creds = Credentials.from_service_account_file('credentials.json', scopes=scopes)
+        client = gspread.authorize(creds)
+        spreadsheet_id = "10DPMrEQZkOdYJFVIcjqVas7HCuu7xCBwyGD4ha7BqG0" # ★要書き換え★
+        spreadsheet = client.open_by_key(spreadsheet_id)
         worksheet = spreadsheet.worksheet(sheet_name)
-    except gspread.WorksheetNotFound:
-        print(f"エラー: シート '{sheet_name}' が見つかりません。")
-        sys.exit(1)
+    except Exception as e:
+        print(f"スプレッドシート読み込みエラー: {e}")
+        return [], [], []
 
     records = worksheet.get_all_records()
-    
-    names = []
-    location_names = []
-    locations = []
+    names, location_names, locations = [], [], []
     for row in records:
         names.append(str(row['名前']))
         location_names.append(str(row['場所名']))
@@ -125,33 +111,52 @@ def get_vehicle_display_name(vehicle_id, real_count):
     trip_id = (vehicle_id // real_count) + 1
     return f"車両{real_id} (便{trip_id})", real_id
 
+def update_google_sheets(df):
+    try:
+        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+        creds = Credentials.from_service_account_file('credentials.json', scopes=scopes)
+        client = gspread.authorize(creds)
+        spreadsheet_id = "10DPMrEQZkOdYJFVIcjqVas7HCuu7xCBwyGD4ha7BqG0" # ★要書き換え★
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        
+        try:
+            worksheet = spreadsheet.worksheet("Output")
+        except:
+            worksheet = spreadsheet.add_worksheet(title="Output", rows=100, cols=20)
+        
+        worksheet.clear()
+        if not df.empty:
+            df = df.astype(str)
+            payload = [df.columns.values.tolist()] + df.values.tolist()
+            worksheet.update(values=payload, range_name='A1')
+            return "成功しました！"
+        return "データがありませんでした"
+    except Exception as e:
+        return f"エラー: {e}"
+
 # ==========================================
-# 2. データモデル構築 (多回転対応)
+# 2. データモデル構築 (★ここを改造★)
 # ==========================================
 
-def create_data_model():
+def create_data_model(config): # 引数 config を受け取るように変更
     data = {}
     
     api_key = ""
-    
-    # --- APIキー読み込みロジック (修正版) ---
     try:
-        # 1. アプリ実行時 (Streamlit経由)
         api_key = st.secrets["GOOGLE_MAPS_API_KEY"]
-        
-    except Exception: 
-        # 2. コマンド実行時 (python main.py)
+    except Exception:
         try:
             with open(".streamlit/secrets.toml", "rb") as f:
                 secrets = tomllib.load(f)
                 api_key = secrets["GOOGLE_MAPS_API_KEY"]
-            print("確認: secrets.toml からAPIキーを読み込みました。")
-        except Exception as e:
-            print(f"注意: APIキーが見つかりません。簡易モードで実行します。")
+        except:
             api_key = ""
 
     # 1. データ取得
     names, loc_names, locations = get_input_from_sheet("Input")
+    if not names:
+        return None # エラー時
+
     data['names'] = names
     data['location_names'] = loc_names
     data['locations'] = locations
@@ -160,42 +165,46 @@ def create_data_model():
     # 2. 行列計算
     if api_key:
         data['time_matrix'] = get_distance_matrix_batched(locations, api_key)
-        if data['time_matrix']:
-             flat_list = [val for row in data['time_matrix'] for val in row]
-             if 9999 in flat_list:
-                 print("⚠️ 警告: 一部のルートが見つかりませんでした (9999分)")
-        else:
+        if not data['time_matrix']:
             data['time_matrix'] = calculate_haversine_matrix(locations)
     else:
         data['time_matrix'] = calculate_haversine_matrix(locations)
 
-    # 3. 車両・制約設定
-    real_vehicle_count = 5
-    max_trips = 2
+    # 3. 車両・制約設定 (★configの値を使う★)
+    real_vehicle_count = config['num_cars'] # 画面から来た値
+    max_trips = config['max_trips']         # 画面から来た値
     
     data['num_vehicles'] = real_vehicle_count * max_trips
     data['real_vehicle_count'] = real_vehicle_count
-    data['vehicle_capacities'] = [10] * data['num_vehicles']
+    
+    # 定員 (全員共通)
+    data['vehicle_capacities'] = [config['capacity']] * data['num_vehicles']
     
     data['depot'] = 0
-    data['service_time'] = 5
+    data['service_time'] = config['service_time'] # 滞在時間
     data['demands'] = [0] + [1] * (num_locations - 1)
     
-    data['time_windows'] = [[1080, 1140]] * num_locations
-    data['time_windows'][0] = [1080, 1140]
+    # 時間窓 (画面から来た start_minutes, end_minutes を使う)
+    start_min = config['start_minutes']
+    end_min = config['end_minutes']
+    
+    # 全地点の時間窓
+    data['time_windows'] = [[start_min, end_min]] * num_locations
+    
+    # ★修正: 施設の終了時間も、画面設定値(end_min)を厳守させる
+    data['time_windows'][0] = [start_min, end_min]
 
     return data
+
 # ==========================================
-# 3. 出力関数
+# 3. 出力用データ作成
 # ==========================================
 
-def save_map(data, manager, routing, solution):
-    print("地図を生成しています...")
+def create_map_object(data, manager, routing, solution):
     depot_loc = data['locations'][data['depot']]
     m = folium.Map(location=depot_loc, zoom_start=13)
-    colors = ['blue', 'green', 'purple', 'orange', 'darkred', 'cadetblue']
+    colors = ['blue', 'green', 'purple', 'orange', 'darkred', 'cadetblue', 'pink', 'darkgreen']
 
-    vehicle_count = 0
     for vehicle_id in range(data['num_vehicles']):
         index = routing.Start(vehicle_id)
         if routing.IsEnd(solution.Value(routing.NextVar(index))):
@@ -222,14 +231,9 @@ def save_map(data, manager, routing, solution):
             
             points = get_osrm_route(loc, next_loc)
             folium.PolyLine(points, color=color, weight=3, opacity=0.8, tooltip=display_name).add_to(m)
-        
-        vehicle_count += 1
+    return m
 
-    m.save("route_map_multi.html")
-    print(f"地図を保存しました: route_map_multi.html (稼働: {vehicle_count}便)")
-
-def save_google_sheets(data, manager, routing, solution):
-    print("Googleスプレッドシート(Output)を更新しています...")
+def create_schedule_df(data, manager, routing, solution):
     rows = []
     time_dimension = routing.GetDimensionOrDie('Time')
     
@@ -270,55 +274,24 @@ def save_google_sheets(data, manager, routing, solution):
         })
 
     df = pd.DataFrame(rows)
+
+    # ★追加修正: ここで全データを文字列型に強制変換する
+    # これで数値と文字が混ざっていてもエラーになりません
     df = df.astype(str)
 
-    try:
-        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-        creds = Credentials.from_service_account_file('credentials.json', scopes=scopes)
-        client = gspread.authorize(creds)
-        spreadsheet_id = "10DPMrEQZkOdYJFVIcjqVas7HCuu7xCBwyGD4ha7BqG0" # ★ID書き換え★
-        spreadsheet = client.open_by_key(spreadsheet_id)
-        
-        try:
-            worksheet = spreadsheet.worksheet("Output")
-        except:
-            worksheet = spreadsheet.add_worksheet(title="Output", rows=100, cols=20)
-        
-        worksheet.clear()
-        if not df.empty:
-            payload = [df.columns.values.tolist()] + df.values.tolist()
-            worksheet.update(values=payload, range_name='A1')
-            print("スプレッドシートの更新が完了しました！")
-        else:
-            print("稼働した車両はありませんでした。")
-        
-    except Exception as e:
-        print(f"シート更新エラー: {e}")
+    return df
 
 # ==========================================
-# 4. メイン処理 (Solver)
+# 4. メイン処理 (アプリ用)
 # ==========================================
 
-def solve():
-    data = create_data_model()
+def solve_vrp(config): # configを受け取る
+    data = create_data_model(config) # configを渡す
+    if not data: return False, 0, None, None
+
     manager = pywrapcp.RoutingIndexManager(len(data['time_matrix']), data['num_vehicles'], data['depot'])
     routing = pywrapcp.RoutingModel(manager)
 
-    # === ★追加: 若い番号の便（1便目）を優先して使う設定 ===
-    # 2便目以降を使うと「ペナルティ（コスト）」がかかるようにします。
-    # これにより、AIは「まずはペナルティのない1便目を使おう」と判断します。
-    
-    real_count = data['real_vehicle_count']
-    for i in range(data['num_vehicles']):
-        # 何便目かを計算 (0始まり: 0=1便目, 1=2便目...)
-        trip_index = i // real_count
-        
-        # 2便目以降ならコストを追加 (例: 1000ポイント)
-        if trip_index > 0:
-            routing.SetFixedCostOfVehicle(1000, i)
-    # ====================================================
-
-    # コスト
     def time_callback(from_index, to_index):
         from_node = manager.IndexToNode(from_index)
         to_node = manager.IndexToNode(to_index)
@@ -326,14 +299,12 @@ def solve():
     transit_callback_index = routing.RegisterTransitCallback(time_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
-    # 定員
     def demand_callback(from_index):
         from_node = manager.IndexToNode(from_index)
         return data['demands'][from_node]
     demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
     routing.AddDimensionWithVehicleCapacity(demand_callback_index, 0, data['vehicle_capacities'], True, 'Capacity')
 
-    # 時間
     def total_time_callback(from_index, to_index):
         from_node = manager.IndexToNode(from_index)
         to_node = manager.IndexToNode(to_index)
@@ -345,36 +316,35 @@ def solve():
     routing.AddDimension(total_time_callback_index, 10000, 10000, False, 'Time')
     time_dimension = routing.GetDimensionOrDie('Time')
     
-    # 時間窓 (Node)
+    # 時間窓設定
     for i in range(len(data['time_matrix'])):
         index = manager.NodeToIndex(i)
         time_dimension.CumulVar(index).SetRange(data['time_windows'][i][0], data['time_windows'][i][1])
 
-    # 時間窓 (Vehicle Start/End)
-    # 車両ごとの時間窓設定 (修正版)
+    # 車両出発時間の設定
     real_count = data['real_vehicle_count']
+    depot_window = data['time_windows'][data['depot']]
     
     for i in range(data['num_vehicles']):
         start_index = routing.Start(i)
         end_index = routing.End(i)
-        depot_window = data['time_windows'][data['depot']]
         
-        # 1便目 (朝イチの便) かどうかチェック
+        # 1便目は開始時間ジャストに出発
         if i < real_count:
-            # ★1便目は「開始時間ジャスト(18:00)」に出発させる
-            # SetRange(1080, 1080) にすることで、18:00以外を許しません
             start_time = depot_window[0]
             time_dimension.CumulVar(start_index).SetRange(start_time, start_time)
         else:
-            # 2便目以降は「18:00〜19:00」の範囲で自由 (前の便が帰ってきてから出る)
             time_dimension.CumulVar(start_index).SetRange(depot_window[0], depot_window[1])
             
-        # 終了時間はいつでもOK
         time_dimension.CumulVar(end_index).SetRange(depot_window[0], depot_window[1])
 
-    # 2便目制約 (安全版)
+        # 2便目以降にペナルティ(コスト)を与えて、1便目を優先させる
+        trip_index = i // real_count
+        if trip_index > 0:
+            routing.SetFixedCostOfVehicle(1000, i)
+
+    # 2便目制約
     solver = routing.solver()
-    real_count = data['real_vehicle_count']
     for v in range(real_count, data['num_vehicles']):
         prev_v = v - real_count
         prev_end_index = routing.End(prev_v)
@@ -385,17 +355,15 @@ def solve():
     # 実行
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
     search_parameters.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-    search_parameters.time_limit.seconds = 180 # 180秒に設定
+    search_parameters.time_limit.seconds = 180
 
-    print(f"最適化を開始します (実車{data['real_vehicle_count']}台 × 2回転)...")
+    print("最適化計算を実行中...")
     solution = routing.SolveWithParameters(search_parameters)
 
     if solution:
-        print(f"総移動時間: {solution.ObjectiveValue()} 分")
-        save_map(data, manager, routing, solution)
-        save_google_sheets(data, manager, routing, solution)
+        total_time = solution.ObjectiveValue()
+        m = create_map_object(data, manager, routing, solution)
+        df = create_schedule_df(data, manager, routing, solution)
+        return True, total_time, m, df
     else:
-        print("解が見つかりませんでした。条件を見直してください。")
-
-if __name__ == '__main__':
-    solve()
+        return False, 0, None, None
