@@ -1,11 +1,22 @@
-# Python Environment
+# --- 秘密鍵・認証情報 (絶対公開ダメ！) ---
+.streamlit/secrets.toml
+credentials.json
+key.txt
+
+# --- Pythonの一時ファイル ---
 __pycache__/
 *.pyc
 venv/
 .env
 
-# Docker
-.dockerignore
+# --- 生成された成果物 (管理不要なら除外) ---
+route_schedule.xlsx
+route_map_*.html
 
-# VS Code
-.vscode/
+# --- Docker関連 ---
+.devcontainer/
+# Dockerfile は共有したいので除外しません
+
+# --- OSのシステムファイル ---
+.DS_Store
+Thumbs.db
