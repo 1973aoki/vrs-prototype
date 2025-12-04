@@ -17,6 +17,7 @@ from ortools.constraint_solver import pywrapcp
 # ==========================================
 
 def time_str_to_minutes(t_str, default_minutes):
+    """ '18:50' -> 分(1130) に変換する関数 """
     if not t_str or str(t_str).strip() == "":
         return default_minutes
     try:
@@ -83,7 +84,7 @@ def get_input_from_sheet(sheet_name="Input"):
         scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
         creds = Credentials.from_service_account_file('credentials.json', scopes=scopes)
         client = gspread.authorize(creds)
-        spreadsheet_id = "10DPMrEQZkOdYJFVIcjqVas7HCuu7xCBwyGD4ha7BqG0" # ★要書き換え★
+        spreadsheet_id = "10DPMrEQZkOdYJFVIcjqVas7HCuu7xCBwyGD4ha7BqG0" # ★ID書き換え★
         spreadsheet = client.open_by_key(spreadsheet_id)
         worksheet = spreadsheet.worksheet(sheet_name)
     except Exception as e:
@@ -92,11 +93,13 @@ def get_input_from_sheet(sheet_name="Input"):
 
     records = worksheet.get_all_records()
     names, location_names, locations, time_windows = [], [], [], []
+    
     for row in records:
         names.append(str(row['名前']))
         location_names.append(str(row['場所名']))
         locations.append((float(row['緯度']), float(row['経度'])))
         time_windows.append(str(row.get('希望時間', '')).strip())
+        
     print(f"{len(names)} 件のデータを読み込みました。")
     return names, location_names, locations, time_windows
 
@@ -125,12 +128,14 @@ def update_google_sheets(df):
         scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
         creds = Credentials.from_service_account_file('credentials.json', scopes=scopes)
         client = gspread.authorize(creds)
-        spreadsheet_id = "10DPMrEQZkOdYJFVIcjqVas7HCuu7xCBwyGD4ha7BqG0" # ★要書き換え★
+        spreadsheet_id = "10DPMrEQZkOdYJFVIcjqVas7HCuu7xCBwyGD4ha7BqG0" # ★ID書き換え★
         spreadsheet = client.open_by_key(spreadsheet_id)
+        
         try:
             worksheet = spreadsheet.worksheet("Output")
         except:
             worksheet = spreadsheet.add_worksheet(title="Output", rows=100, cols=20)
+        
         worksheet.clear()
         if not df.empty:
             df = df.astype(str)
@@ -142,11 +147,13 @@ def update_google_sheets(df):
         return f"エラー: {e}"
 
 # ==========================================
-# 2. データモデル構築
+# 2. データモデル構築 (★修正箇所★)
 # ==========================================
 
 def create_data_model(config):
     data = {}
+    
+    # APIキー読み込み
     api_key = ""
     try:
         api_key = st.secrets["GOOGLE_MAPS_API_KEY"]
@@ -158,6 +165,7 @@ def create_data_model(config):
         except:
             api_key = ""
 
+    # データ取得
     names, loc_names, locations, time_strs = get_input_from_sheet("Input")
     if not names: return None
 
@@ -166,6 +174,7 @@ def create_data_model(config):
     data['locations'] = locations
     num_locations = len(locations)
 
+    # 距離行列
     if api_key:
         data['time_matrix'] = get_distance_matrix_batched(locations, api_key)
         if not data['time_matrix']:
@@ -175,46 +184,49 @@ def create_data_model(config):
 
     # 車両設定
     real_vehicle_count = config['num_cars']
-    capacity = config['capacity']
-    fleet_capacity = real_vehicle_count * capacity
-    
-    num_students = num_locations - 1
-    if fleet_capacity > 0:
-        min_trips_needed = math.ceil(num_students / fleet_capacity)
-    else:
-        min_trips_needed = 1
-    max_trips = min_trips_needed + 2 
+    max_trips = config['max_trips']
     
     data['num_vehicles'] = real_vehicle_count * max_trips
     data['real_vehicle_count'] = real_vehicle_count
-    data['vehicle_capacities'] = [capacity] * data['num_vehicles']
+    data['vehicle_capacities'] = [config['capacity']] * data['num_vehicles']
     data['depot'] = 0
     data['service_time'] = config['service_time']
     data['demands'] = [0] + [1] * (num_locations - 1)
     
-    # 時間窓 (到着期限対応)
+    # --- ★時間窓の設定 (修正版: 到着期限) ---
     global_start = config['start_minutes']
     global_end = config['end_minutes']
+    
     specific_time_windows = []
     
-    print("\n--- 時間指定 ---")
     for i, t_str in enumerate(time_strs):
+        # 施設(0番)は全体設定に従う
         if i == 0:
             specific_time_windows.append([global_start, 1440])
             continue
-        
-        if t_str and str(t_str).strip() != "":
+
+        # 児童の場合
+        if t_str and t_str.strip() != "":
+            # === 希望時間がある場合 ===
+            # 希望時間 = 「この時間までに着かないとダメ (End)」
             deadline = time_str_to_minutes(t_str, global_end)
-            start = global_start
+            
+            # 開始時間 = 「全体開始時間 (Start)」
+            # (あまりに早く着きすぎるのを防ぐため、deadlineの30分前〜deadline とかにすることも可能です)
+            # 今回はシンプルに「希望時間の5分前〜希望時間」ならいつでもOKとします
+           start = deadline - 5
+            
+            # 矛盾チェック (開始時間が締切より後なら、締切を開始に合わせる等の補正)
             if deadline < start:
-                print(f"⚠️ 締切補正: {names[i]} ({t_str})")
-                deadline = start + 30 
+                deadline = start + 15 # 無理やり15分猶予を与える
+
             specific_time_windows.append([start, deadline])
         else:
+            # === 希望時間がない場合 ===
             specific_time_windows.append([global_start, global_end])
-    print("----------------\n")
     
     data['time_windows'] = specific_time_windows
+
     return data
 
 # ==========================================
@@ -233,6 +245,7 @@ def create_map_object(data, manager, routing, solution):
 
         display_name, real_id = get_vehicle_display_name(vehicle_id, data['real_vehicle_count'])
         color = colors[(real_id - 1) % len(colors)]
+        
         step = 1
         while not routing.IsEnd(index):
             node_index = manager.IndexToNode(index)
@@ -248,6 +261,7 @@ def create_map_object(data, manager, routing, solution):
             index = solution.Value(routing.NextVar(index))
             next_node_index = manager.IndexToNode(index)
             next_loc = data['locations'][next_node_index]
+            
             points = get_osrm_route(loc, next_loc)
             folium.PolyLine(points, color=color, weight=3, opacity=0.8, tooltip=display_name).add_to(m)
     return m
@@ -255,6 +269,7 @@ def create_map_object(data, manager, routing, solution):
 def create_schedule_df(data, manager, routing, solution):
     rows = []
     time_dimension = routing.GetDimensionOrDie('Time')
+    
     for vehicle_id in range(data['num_vehicles']):
         index = routing.Start(vehicle_id)
         if routing.IsEnd(solution.Value(routing.NextVar(index))):
@@ -265,17 +280,8 @@ def create_schedule_df(data, manager, routing, solution):
         while not routing.IsEnd(index):
             node_index = manager.IndexToNode(index)
             arrival_minutes = solution.Min(time_dimension.CumulVar(index))
+            service = 0 if node_index == data['depot'] else data['service_time']
             
-            # 同一場所サービス時間短縮
-            next_index = solution.Value(routing.NextVar(index))
-            is_next_same = False
-            if not routing.IsEnd(next_index):
-                next_node = manager.IndexToNode(next_index)
-                if data['locations'][node_index] == data['locations'][next_node]:
-                    is_next_same = True
-
-            service = 0 if (node_index == data['depot'] or is_next_same) else data['service_time']
-
             rows.append({
                 "車両名": display_name,
                 "訪問順": step,
@@ -286,7 +292,7 @@ def create_schedule_df(data, manager, routing, solution):
                 "滞在時間": service
             })
             step += 1
-            index = next_index
+            index = solution.Value(routing.NextVar(index))
             
         node_index = manager.IndexToNode(index)
         arrival_minutes = solution.Min(time_dimension.CumulVar(index))
@@ -299,6 +305,7 @@ def create_schedule_df(data, manager, routing, solution):
             "出発予定時刻": "-",
             "滞在時間": "-"
         })
+
     df = pd.DataFrame(rows)
     df = df.astype(str)
     return df
@@ -314,7 +321,6 @@ def solve_vrp(config):
     manager = pywrapcp.RoutingIndexManager(len(data['time_matrix']), data['num_vehicles'], data['depot'])
     routing = pywrapcp.RoutingModel(manager)
 
-    # コスト
     def time_callback(from_index, to_index):
         from_node = manager.IndexToNode(from_index)
         to_node = manager.IndexToNode(to_index)
@@ -322,28 +328,20 @@ def solve_vrp(config):
     transit_callback_index = routing.RegisterTransitCallback(time_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
-    # 定員 (相乗りペナルティは削除しました)
     def demand_callback(from_index):
         from_node = manager.IndexToNode(from_index)
         return data['demands'][from_node]
     demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
     routing.AddDimensionWithVehicleCapacity(demand_callback_index, 0, data['vehicle_capacities'], True, 'Capacity')
 
-    # 時間
     def total_time_callback(from_index, to_index):
         from_node = manager.IndexToNode(from_index)
         to_node = manager.IndexToNode(to_index)
         travel = data['time_matrix'][from_node][to_node]
-        
-        service = 0
-        if from_node != data['depot']:
-            if data['locations'][from_node] == data['locations'][to_node]:
-                service = 0
-            else:
-                service = data['service_time']
+        service = 0 if from_node == data['depot'] else data['service_time']
         return travel + service
-
     total_time_callback_index = routing.RegisterTransitCallback(total_time_callback)
+    
     routing.AddDimension(total_time_callback_index, 10000, 10000, False, 'Time')
     time_dimension = routing.GetDimensionOrDie('Time')
     
@@ -358,16 +356,17 @@ def solve_vrp(config):
         start_index = routing.Start(i)
         end_index = routing.End(i)
         
-        time_dimension.CumulVar(start_index).SetRange(depot_window[0], depot_window[1])
+        if i < real_count:
+            start_time = depot_window[0]
+            time_dimension.CumulVar(start_index).SetRange(start_time, start_time)
+        else:
+            time_dimension.CumulVar(start_index).SetRange(depot_window[0], depot_window[1])
+            
         time_dimension.CumulVar(end_index).SetRange(depot_window[0], depot_window[1])
-        
-        # 後ろ詰め（遅く出発）設定
-        routing.AddVariableMaximizedByFinalizer(time_dimension.CumulVar(start_index))
 
-        # 便が増えるごとにコスト加算 (1便目優先)
         trip_index = i // real_count
-        fixed_cost = 1000 * trip_index 
-        routing.SetFixedCostOfVehicle(fixed_cost, i)
+        if trip_index > 0:
+            routing.SetFixedCostOfVehicle(1000, i)
 
     solver = routing.solver()
     for v in range(real_count, data['num_vehicles']):

@@ -1,24 +1,19 @@
-# 1. ベースイメージの指定
-# Python 3.12 の公式イメージ（軽量版）を使用します。
+# 1. ベースイメージ (軽量なPython)
 FROM python:3.12-slim
 
-# 2. 作業ディレクトリの設定
-# コンテナ内の /app フォルダを作業場所として指定します。
+# 2. 作業ディレクトリ
 WORKDIR /app
 
-# 3. 依存関係のコピーとインストール
-# ホストPCの requirements.txt をコンテナにコピーします。
+# 3. 必要なパッケージをインストール (キャッシュ活用)
 COPY requirements.txt .
-
-# requirements.txt に書かれたすべてのライブラリをインストールします。
-# ortools や requests などがインストールされます。
-# --no-cache-dir はイメージサイズを小さく保つための推奨オプションです。
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. アプリケーションコードのコピー
-# プロジェクトのルートディレクトリにあるすべてのコードファイルをコンテナの /app にコピーします。
+# 4. ソースコードをコピー
+# (.dockerignore で secrets.toml などを除外している前提)
 COPY . .
 
-# 5. コンテナ起動時のデフォルトコマンド
-# コンテナを実行したときに、メインの Python スクリプト main.py を実行するように設定します。
-CMD ["python", "main.py"]
+# 5. ポート開放
+EXPOSE 8501
+
+# 6. アプリ起動コマンド
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]

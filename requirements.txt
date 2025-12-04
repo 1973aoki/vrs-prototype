@@ -1,2 +1,9 @@
 ortools
 requests
+pandas
+folium
+gspread
+google-auth
+openpyxl
+streamlit
+streamlit-folium

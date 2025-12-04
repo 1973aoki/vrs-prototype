@@ -25,7 +25,7 @@ st.sidebar.header("⚙️ 運行条件の設定")
 
 st.sidebar.subheader("1. 車両の設定")
 num_cars = st.sidebar.number_input("稼働する車の台数", min_value=1, max_value=10, value=5)
-capacity = st.sidebar.number_input("車の定員 (全員共通)", min_value=1, max_value=20, value=10)
+capacity = st.sidebar.number_input("車の定員 (全員共通)", min_value=1, max_value=20, value=5)
 max_trips = st.sidebar.selectbox("最大何回まで往復可能？", [1, 2, 3], index=1)
 
 st.sidebar.subheader("2. 時間の設定")
@@ -54,7 +54,7 @@ if start_minutes >= end_minutes:
 else:
     # --- 計算実行ボタン ---
     if st.sidebar.button("ルート計算を開始する", type="primary"):
-        with st.spinner("AIがルートを計算中です... (最大180秒かかります)"):
+        with st.spinner("AIがルートを計算中です... (最大300秒かかります)"):
             
             # 計算実行
             success, total_time, m, df = main.solve_vrp(config)
@@ -83,8 +83,9 @@ else:
             
         with tab2:
             # 警告回避のために use_container_width=True を維持 (Streamlitのバージョンによっては width='stretch' 推奨)
-            st.dataframe(df, use_container_width=True)
-            
+            # st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width=1000) # ピクセル指定が無難です
+
             csv = df.to_csv(index=False).encode('utf-8_sig')
             st.download_button(
                 label="📥 結果をCSVでダウンロード",
